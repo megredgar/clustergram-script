@@ -1,0 +1,153 @@
+
+clustergram.twoway <- function(clust.assign, line.width = 0.001,
+                               lab = "cluster",
+                               fill_side = c("x","y"),
+                               color_by = c("y_size","x_size","none"),
+                               remap_x = NULL, remap_y = NULL,
+                               alpha = 0.7) {
+  stopifnot(is.data.frame(clust.assign))
+  stopifnot(all(c("clust.x","clust.y") %in% colnames(clust.assign)))
+  fill_side <- match.arg(fill_side)
+  color_by  <- match.arg(color_by)
+
+  # --- optional remaps (names = originals, values = new labels) ---
+  if (!is.null(remap_x)) {
+    cx <- as.character(clust.assign$clust.x)
+    clust.assign$clust.x <- unname(remap_x[cx])
+  }
+  if (!is.null(remap_y)) {
+    cy <- as.character(clust.assign$clust.y)
+    clust.assign$clust.y <- unname(remap_y[cy])
+  }
+
+  # centers for label placement
+  yval <- function(clustering) {
+    cs  <- cumsum(table(clustering) / length(clustering))
+    val <- (c(0, cs[-length(cs)]) + diff(c(0, cs)) / 2)
+    names(val) <- names(table(clustering))
+    val
+  }
+  cent_x <- yval(clust.assign$clust.x)
+  cent_y <- yval(clust.assign$clust.y)
+
+  n <- nrow(clust.assign)
+  dat_long <- rbind(
+    data.frame(row_id = seq_len(n), Clustering = "clust.x",
+               cluster = as.character(clust.assign$clust.x),
+               center  = cent_x[match(clust.assign$clust.x, names(cent_x))],
+               stringsAsFactors = FALSE),
+    data.frame(row_id = seq_len(n), Clustering = "clust.y",
+               cluster = as.character(clust.assign$clust.y),
+               center  = cent_y[match(clust.assign$clust.y, names(cent_y))],
+               stringsAsFactors = FALSE)
+  )
+  dat_long$line.width <- line.width
+
+  # stack within each (side, cluster)
+  dat_long <- ddply(
+    dat_long,
+    c(as.quoted("Clustering"), as.quoted("cluster")),
+    transform,
+    adj = center - 0.5 * length(row_id) * line.width + seq_along(row_id) * line.width
+  )
+
+  # split sides
+  dx <- subset(dat_long, Clustering == "clust.x")
+  dy <- subset(dat_long, Clustering == "clust.y")
+  dx <- dx[order(dx$row_id), ]
+  dy <- dy[order(dy$row_id), ]
+
+  # cluster sizes
+  size_x <- as.list(table(clust.assign$clust.x))
+  size_y <- as.list(table(clust.assign$clust.y))
+  size_x <- setNames(as.numeric(size_x), names(size_x))
+  size_y <- setNames(as.numeric(size_y), names(size_y))
+
+  # choose color variable
+  if (color_by == "x_size") {
+    color_val <- size_x[dx$cluster]
+    legend_title <- "Cluster size (X)"
+  } else if (color_by == "y_size") {
+    color_val <- size_y[dy$cluster]
+    legend_title <- "Cluster size (Y)"
+  } else {
+    color_val <- rep(1, n)  # no mapping
+    legend_title <- "Cluster size"
+  }
+  color_val <- as.numeric(color_val)
+
+  # fill (categorical by origin/destination cluster) just to differentiate when no gradient
+  fill_var <- if (fill_side == "x") factor(dx$cluster) else factor(dy$cluster)
+
+  # build polygons
+  polys <- ldply(seq_len(n), function(i) {
+    data.frame(
+      row_id = dx$row_id[i],
+      Clustering = factor(c("clust.x","clust.x","clust.y","clust.y"),
+                          levels = c("clust.x","clust.y")),
+      y = c(dx$adj[i] - line.width, dx$adj[i] + line.width,
+            dy$adj[i] + line.width, dy$adj[i] - line.width),
+      fill_var = fill_var[i],
+      size_val = color_val[i]
+    )
+  })
+
+  # labels = cluster IDs
+  lab_df <- unique(dat_long[, c("Clustering","cluster","center")])
+  lab_df$label <- as.character(lab_df$cluster)
+  lab_df$Clustering <- factor(lab_df$Clustering, levels = c("clust.x","clust.y"))
+
+  p <- ggplot(polys, aes(x = Clustering, y = y, group = row_id)) +
+    geom_polygon(aes(fill = size_val), color = NA, alpha = alpha) +  # mapped to gradient
+    coord_flip() +
+    geom_label(data = lab_df,
+               aes(x = Clustering, y = center, label = label),
+               inherit.aes = FALSE,
+               hjust = 0.5, size = 5, fill = "white", label.size = 0.2) +
+    theme_minimal(base_size = 16) +
+    theme(
+      legend.position = "right",
+      axis.text = element_text(size = 14),
+      axis.title = element_text(size = 16)
+    ) +
+    scale_x_discrete(expand = c(0.05, 0.05)) +
+    scale_y_continuous(breaks = NULL) +
+    xlab(NULL) + ylab(NULL)
+
+  # continuous legend for cluster size (gradient)
+  if (color_by == "none") {
+    p <- p + scale_fill_manual(values = "grey80", guide = "none")
+  } else {
+    p <- p + scale_fill_gradient(name = legend_title, low = "lightgray", high = "darkblue")
+  }
+
+  return(p)
+}
+uxy <- untangle_xy(clust.assign[, c("clust.x","clust.y")], passes = 2)
+
+p <- clustergram.twoway(
+  clust.assign[, c("clust.x","clust.y")],
+  line.width = 0.002,
+  lab = "cluster",
+  fill_side = "x",
+  color_by  = "y_size",   
+  remap_x = uxy$remap_x,
+  remap_y = uxy$remap_y,
+  alpha = 0.65
+)
+print(p)
+p2<-p + scale_x_discrete(labels = c("clust.x" = "NAT", "clust.y" = "HF"))
+p4 <- p2 + scale_fill_gradient(name = "Species", low = "lightgray", high = "darkblue")
+p4
+
+
+p4_big <- p4 +
+  theme(
+    text         = element_text(size = 20),  # global
+    axis.text    = element_text(size = 18),
+    axis.title   = element_text(size = 20),
+    legend.title = element_text(size = 18),
+    legend.text  = element_text(size = 16)
+  )
+
+p4_big
